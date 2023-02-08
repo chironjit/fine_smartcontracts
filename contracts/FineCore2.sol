@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.2;
+pragma solidity ^0.8.18;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/Counters.sol";
@@ -8,7 +8,19 @@ interface RandomizerInt {
     function returnValue() external view returns (bytes32);
 }
 
-/// @custom:security-contact skyfly200@gmail.com
+enum EntropySource {
+    Internal,
+    External
+}
+
+struct FineCoreSettings {
+    address payable fineTreasury;
+    uint16 platformPercentage;
+    uint16 platformRoyalty;
+    EntropySource entropySetting;
+}
+
+
 contract FineCore is AccessControl {
     using Counters for Counters.Counter;
 
@@ -17,24 +29,30 @@ contract FineCore is AccessControl {
     mapping(uint => address) public projects;
     mapping(address => bool) public allowlist;
 
-    address payable public FINE_TREASURY = payable(0x5C0153E663532b19F0344dB97C6feFB47a2C1b7F);
-    uint256 public platformPercentage = 1000;
-    uint256 public platformRoyalty = 1000;
+    FineCoreSettings public settings;
     
-    constructor(address entropySourceAddress) {
+    constructor(address payable _treasury, uint _platformPercentage, uint _platformRoyalty) {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        entropySource = RandomizerInt(entropySourceAddress);
+        FineCoreSettings memory set;
+        set.fineTreasury = _treasury;
+        set.platformPercentage = uint16(_platformPercentage);
+        set.platformRoyalty = uint16(_platformRoyalty);
+        settings = set;
     }
 
     // Core Mgmt Functions
 
     /**
      * @dev Update the treasury address
-     * @param treasury address to set
+     * @param _treasury address to set
      * @dev Only the admin can call this
      */
-    function setTreasury(address payable treasury) onlyRole(DEFAULT_ADMIN_ROLE) external {
-        FINE_TREASURY = treasury;
+    function setTreasury(address payable _treasury) onlyRole(DEFAULT_ADMIN_ROLE) external {
+        settings.fineTreasury = _treasury;
+    }
+
+    function getTreasury() external view returns (address payable) {
+        return settings.fineTreasury;
     }
 
     /**
@@ -42,8 +60,13 @@ contract FineCore is AccessControl {
      * @param _percentage for royalties
      * @dev Only the admin can call this
      */
-    function setPlatformPercent(uint96 _percentage) onlyRole(DEFAULT_ADMIN_ROLE) external {
-        platformPercentage = _percentage;
+    function setPlatformPercent(uint _percentage) onlyRole(DEFAULT_ADMIN_ROLE) external {
+        require(_percentage < 10000, "Value not valid");
+        settings.platformPercentage = uint16(_percentage);
+    }
+
+    function getPlatformPercent() external view returns (uint) {
+        return settings.platformPercentage;
     }
 
     /**
@@ -51,9 +74,15 @@ contract FineCore is AccessControl {
      * @param _percentage for royalties
      * @dev Only the admin can call this
      */
-    function setRoyaltyPercent(uint96 _percentage) onlyRole(DEFAULT_ADMIN_ROLE) external {
-        platformRoyalty = _percentage;
+    function setRoyaltyPercent(uint _percentage) onlyRole(DEFAULT_ADMIN_ROLE) external {
+        require(_percentage < 10000, "Value not valid");
+        settings.platformRoyalty = uint16(_percentage);
     }
+
+    function getRoyaltyPercentage() external view returns (uint) {
+        return settings.platformRoyalty;
+    }
+
 
     // Project Mgmt Functions
 
@@ -93,15 +122,31 @@ contract FineCore is AccessControl {
     /**
      * @dev set Randomizer
      */
-    function setRandom(address rand) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setExternalEntropySource(address rand) external onlyRole(DEFAULT_ADMIN_ROLE) {
         entropySource = RandomizerInt(rand);
+        settings.entropySetting = EntropySource.External;
     }
 
     /**
-     * @dev test Randomizer
+     * @dev test external Randomizer
      */
-    function testRandom() external view onlyRole(DEFAULT_ADMIN_ROLE) returns (bytes32) {
+    function testExternalRandom() external view onlyRole(DEFAULT_ADMIN_ROLE) returns (bytes32) {
         return entropySource.returnValue();
+    }
+
+    /**
+     * @dev External random call
+     */
+
+    function externalRandom() internal view returns (bytes32) {
+        return entropySource.returnValue();
+    }
+
+    /**
+     * @dev Internal random call
+     */
+    function internalRandom() internal view returns (bytes32) {
+        return bytes32(block.prevrandao);
     }
 
     /**
@@ -111,8 +156,11 @@ contract FineCore is AccessControl {
         external view returns (uint256 randomnesss)
     {
         require(allowlist[msg.sender], "rng caller not allow listed");
+
+        bytes32 entropy = (settings.entropySetting == EntropySource.Internal) ? internalRandom() : externalRandom();
+
         uint256 randomness = uint256(keccak256(abi.encodePacked(
-            entropySource.returnValue(),
+            entropy,
             id,
             seed
         )));
